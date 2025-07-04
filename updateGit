@@ -1,0 +1,7 @@
+# git remote add origin git@github.com:kkt-ee/TFDST.git
+# git branch -M main
+# git push -u origin main
+
+git add -A
+git commit -m "v001"
+#git push -u origin master
