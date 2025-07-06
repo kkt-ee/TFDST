@@ -20,10 +20,15 @@
 
 # import tensorflow as tf
 
-# from IIR1Dv1 import IIR1D
-# from IIR2Dv1 import IIR2D
-# from IIR3Dv1 import IIR3D
+# from TFDST.DST2DFB import DST2D
+# from TFDST.DST3DFB import DST3D
 
+## Example usage 2D
+# forward  = DST2D(N=N, J=2, L=[1, 2], B=[4, 8], norm=True, wave='bior1.5')
+# inverse = DST2D(N=N, J=2, L=[1, 2], B=[4, 8], norm=True, wave='bior1.5', transform='inverse')
 
+## Example usage 3D
+# forward = DST3D(N=N, J=2, L=[1, 2], B=[4, 8], norm=True, wave='bior1.5')
+# inverse = DST3D(N=N, J=2, L=[1, 2], B=[4, 8], norm=True, wave='bior1.5', transform='inverse')
 
 __version__="0.0.1"
