@@ -1,4 +1,4 @@
-# git remote add origin git@github.com:kkt-ee/TFDST.git
+# git remote add origin git@github.com:kkt-ee/DST.git
 # git branch -M main
 # git push -u origin main
 
