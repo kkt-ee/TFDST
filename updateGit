@@ -2,6 +2,10 @@
 # git branch -M main
 # git push -u origin main
 
+## meheren
+# eval "$(ssh-agent -s)"
+# ssh-add ~/.ssh/id_ed25519gi
+
 git add -A
-git commit -m "v001"
-#git push -u origin master
+git commit -m "patched"
+git push -u origin master

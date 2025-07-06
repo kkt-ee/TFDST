@@ -1,0 +1,11 @@
+# git remote add origin git@github.com:ksatva/attentions.git
+
+/.*
+!/.gitignore
+/updateGit
+
+
+**/__pycache__/
+**/.ipynb_checkpoints/
+**/*.ckpt/
+
