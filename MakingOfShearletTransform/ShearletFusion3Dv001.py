@@ -1,21 +1,21 @@
 import numpy as np
 import pywt
-from scipy.signal import freqz
-import matplotlib.pyplot as plt
+# from scipy.signal import freqz
+# import matplotlib.pyplot as plt
 import time
 import math
 
 import tensorflow as tf
 # # include ../dirx 
-mylibpath = [
-    '/data1/kishoretarafdar/src.port/DST.v0/shearlet.layers/shearlet_transform.core'
-    ]
-import sys
-[sys.path.insert(0,_) for _ in mylibpath]
-del mylibpath
+# mylibpath = [
+#     '/data1/kishoretarafdar/src.port/DST.v0/shearlet.layers/shearlet_transform.core'
+#     ]
+# import sys
+# [sys.path.insert(0,_) for _ in mylibpath]
+# del mylibpath
 
 # import tensorflow as tf
-from ShearletTransform3Dv1 import ShearletTransform3D
+from TFDST.ShearletTransform3Dlayout import ShearletTransform3D
 
 class ShearletFusion3D(ShearletTransform3D):
     """TFDST: Fast Discrete Shearlet Transform Layers in TensorFlow.
@@ -57,7 +57,7 @@ class ShearletFusion3D(ShearletTransform3D):
         if self.norm:
             print(self.norm_factors.shape, filtered.shape, '++')
             # self.norm_factors = tf.expand_dims(self.norm_factors, axis=-5)
-            self.norm_factors = tf.cast(self.norm_factors, dtype=tf.complex128)
+            # self.norm_factors = tf.cast(self.norm_factors, dtype=tf.complex128)
             filtered *= self.norm_factors
         # filtered = tf.transpose(filtered, perm=[0,2,3,4,1])
         return filtered
@@ -72,10 +72,12 @@ class ShearletFusion3D(ShearletTransform3D):
             _, FB = self.getFB()#_yield_filter_bank_tensor_rec()
         else:
             FB, _ = self.getFB()#_yield_filter_bank_tensor()
-        synthesized = tf.einsum('bcfijk,fijk->bijk', yfft, FB)
+        # synthesized = tf.einsum('bcfijk,fijk->bijk', yfft, FB)
+        synthesized = tf.einsum('bcfijk,fijk->bfijk', yfft, FB)   ## trick time-space localization
         synthesized = tf.cast(synthesized, tf.complex128)
         synthesized = tf.signal.ifft3d(synthesized)#, axes=(-3, -2, -1))
-        synthesized = tf.expand_dims(synthesized, axis=-1)
+        # synthesized = tf.expand_dims(synthesized, axis=-1)
+        synthesized = tf.transpose(synthesized, perm=[0, 2,3,4, 1])
         return tf.math.real(synthesized)
 
     def call(self, x):
@@ -93,37 +95,58 @@ if __name__=='__main__':
     print(time.time()-start_time)
     del ST3D 
 
-    ## Example
-    import numpy as np
-    n = 64
-    axis1 = np.arange(0,n)
-    x = np.einsum('i,j->ij', axis1, axis1)
-    x = np.einsum('i,j,k->ijk', axis1, axis1, axis1)
-    xx = tf.expand_dims(tf.expand_dims(x, axis=-1), axis=0)
-    xx = tf.concat([xx,xx, xx], axis=-1)
-    xx.shape
-    # viz(x)
-    dst3D = ShearletFusion3D(N=n, J=2, L=[1, 2], B=[4, 8], norm=True, wave='rbio1.5')
-    dst3D.forward(xx).shape
-    xxrec = dst3D.inverse(dst3D.forward(xx))
-    xxrec.dtype, xxrec.shape
-    print(f"\nReconstruction error: {tf.reduce_sum(tf.abs(xxrec - tf.cast(xx,dtype=tf.float64)))}\n")
+    # ## Example
+    # import numpy as np
+    # n = 64
+    # axis1 = np.arange(0,n)
+    # x = np.einsum('i,j->ij', axis1, axis1)
+    # x = np.einsum('i,j,k->ijk', axis1, axis1, axis1)
+    # xx = tf.expand_dims(tf.expand_dims(x, axis=-1), axis=0)
+    # xx = tf.concat([xx,xx, xx], axis=-1)
+    # xx.shape
+    # # viz(x)
+    # dst3D = ShearletFusion3D(N=n, J=2, L=[1, 2], B=[4, 8], norm=True, wave='rbio1.5')
+    # dst3D.forward(xx).shape
+    # xxrec = dst3D.inverse(dst3D.forward(xx))
+    # xxrec.dtype, xxrec.shape
+    # print(f"\nReconstruction error: {tf.reduce_sum(tf.abs(xxrec - tf.cast(xx,dtype=tf.float64)))}\n")
 
-    ## Example
-    # Define input shape and build the model for summary
-    # input_shape = (16,16, 2)  # Replace N with the actual size of x
-    n = 64
-    input_shape = (n, n, n, 12)
-    inputs = tf.keras.Input(shape=input_shape, dtype=tf.float32)
+    # ## Example
+    # # Define input shape and build the model for summary
+    # # input_shape = (16,16, 2)  # Replace N with the actual size of x
+    # n = 64
+    # input_shape = (n, n, n, 12)
+    # inputs = tf.keras.Input(shape=input_shape, dtype=tf.float32)
+
+    # # Create an instance of the custom layer
+    # H = ShearletFusion3D(N=n, J=2, L=[1, 2], B=[4, 8], norm=True, wave='bior1.5')
+
+    # # Apply the custom layer to the inputs
+    # outputs = H(inputs)
+
+    # # Build the model
+    # model = tf.keras.Model(inputs=inputs, outputs=outputs)
+
+    # # Print the model summary
+    # model.summary()
+
+     ## Example 2: Sample functional model
+    N, channels = 16, 256
+    input_shape = (N, N, N, channels)  # Replace N with the actual size of x    #3D
+    inputs = tf.keras.Input(shape=input_shape)
 
     # Create an instance of the custom layer
-    H = ShearletFusion3D(N=n, J=2, L=[1, 2], B=[4, 8], norm=True, wave='bior1.5')
-
-    # Apply the custom layer to the inputs
+    H = ShearletFusion3D(N=N, J=2, L=[1, 2], B=[4, 8], norm=True, wave='bior1.5')
     outputs = H(inputs)
-
-    # Build the model
+    # outputs = q
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
-
-    # Print the model summary
+    model.compile(optimizer='adam', loss='mse', jit_compile=False)
     model.summary()
+
+    ## 3D Random data
+    inputs_data = tf.random.normal((1, N, N, N, channels))
+    targets = tf.random.normal((1, N, N, N, 63))
+    # Training loop for 5 epochs
+    epochs=5
+    # for epoch in range(5):
+    history = model.fit(inputs_data, targets, epochs=5, verbose=1)
