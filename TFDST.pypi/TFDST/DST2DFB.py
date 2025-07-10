@@ -43,7 +43,7 @@ class DST2D(ShearletTransform2D):
         ## reshape last two axis and output
         shape_tmp = tf.shape(y)
         y = tf.reshape(y, (shape_tmp[0], shape_tmp[1], shape_tmp[2], shape_tmp[3]*shape_tmp[4]))
-        return y
+        return tf.math.real(y)
     
     def call(self, x):
         if self.transform==None:
