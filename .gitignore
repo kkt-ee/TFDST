@@ -6,8 +6,16 @@
 
 
 **/.*
+!**/.gitignore
 **/__pycache__/
 **/.ipynb_checkpoints/
 
 **/*.ckpt/
 
+build/
+dist/
+*.egg-info/
+
+MakingOfShearletTransform
+review
+TFDST.pypi

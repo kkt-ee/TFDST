@@ -6,14 +6,22 @@
 import tensorflow as tf
 import numpy as np # for π
 import pywt
-import time
-
 
 
 class ShearletTransform3D(tf.keras.layers.Layer):
+    """Shearlet transform 3D base layer.
+    
+    TFDST: Fast Discrete Shearlet Transform Layers in TensorFlow.
+    Copyright 2025 Kishore Kumar Tarafdar.
+    Licensed under the Apache License, Version 2.0. See LICENSE for details.
+
+    Filter-bank construction follows mathematical structure developed with
+    credit to Vineet Ghule. This implementation provides differentiable
+    TensorFlow/Keras layers with batched multichannel support and
+    performance-oriented updates.
+    """
     def __init__(
-        self, 
-        N, 
+        self, N, 
         J, 
         L=None,  ## array of +ve integers of length J 
         B=None, 
@@ -22,7 +30,8 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         wave='db3', 
         transform=None, ## inverse
         **kwargs):#, l1=0.0, l2=0.0):
-        super(ShearletTransform3D, self, **kwargs).__init__()
+        super().__init__(**kwargs)
+        """params"""
         self.transform = transform
         self.π = tf.constant(np.pi, dtype=tf.float64)
         if a is not None:
@@ -37,40 +46,43 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         self.shearlet_system = self.get_shearlet_system('wavedec')
         if 'bio' in self.wave:
             self.shearlet_system_rec = self.get_shearlet_system('waverec')
+        else: self.shearlet_system_rec = None
         if self.norm:
-            self.norm_factors = [tf.reduce_sum(tf.math.square(tf.math.abs(filters)), axis=(-3, -2, -1), keepdims=True) for filters in self._yield_filters()]
-            self.norm_factors = tf.concat(self.norm_factors, axis=-4)
-            self.norm_factors = tf.math.sqrt(N**3/self.norm_factors)
-            self.norm_factors = tf.cast(self.norm_factors, tf.complex128)
-        
+            self.norm_factors = self.get_norm_factors()
+            
+    @tf.function
+    def get_norm_factors(self):
+        """ Normalizing with thre reconstruction Filterbank!!! recheck here!!!"""       
+        FBdec, _ = self.getFB()
+        # Compute the squared L2 norm over the spatial dimensions
+        norm_factors = tf.reduce_sum(tf.math.square(tf.math.abs(FBdec)), axis=(-3, -2, -1), keepdims=True)  # shape: [F, 1, 1, 1]
+        norm_factors = tf.math.sqrt(self.N**3/norm_factors)
+        return tf.cast(norm_factors, tf.complex128)
+      
     @tf.function
     def v(self, x):
         x = tf.cast(x, tf.float64)  # Ensure consistent dtype if needed
-
         # Constants casted to match x's dtype
         ten = tf.constant(10.0, dtype=x.dtype)
         fifteen = tf.constant(15.0, dtype=x.dtype)
         six = tf.constant(6.0, dtype=x.dtype)
         one = tf.constant(1.0, dtype=x.dtype)
         zero = tf.constant(0.0, dtype=x.dtype)
-
         # Conditions
         cond0 = x <= zero
         cond1 = x >= one
-
         # Polynomial part for 0 < x < 1
         x_poly = x**3 * (ten - fifteen * x + six * x**2)
-
         return tf.where(cond0, zero, tf.where(cond1, one, x_poly))
 
     @tf.function
     def phi(self, x):
         x = tf.convert_to_tensor(x, dtype=tf.float64)
         x = tf.abs(x) / self.π#tf.constant(np.pi, dtype=tf.float64)
-
+        # Conditions
         cond1 = x <= 1
         cond2 = tf.logical_and(x > 1, x < 2)
-
+        # phi parts
         part1 = tf.ones_like(x)
         part2 = tf.cos(0.5 * self.π * self.v(x - 1))
         part3 = tf.zeros_like(x)
@@ -171,20 +183,15 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         XP1 = tf.cast(XP1, dtype=tf.float64)
         XP2 = tf.cast(XP2, dtype=tf.float64)
 
-        # print(XP1.dtype,'//', XP1)
-
-
         w0 = w[0, :, :1, :1]
         shearlet = self.phi((L[J-1]*B[J-1])*w0)
         shearlet = shearlet*XP0 + tf.transpose(shearlet, perm=[1, 0, 2])*XP1 + tf.transpose(shearlet, perm=[1, 2, 0])*XP2
         shearlet_system[0].append(shearlet)
         
         temp = w[0, :, :, :1]
-        # ratio = tf.math.divide(w[1, :, :, :1], temp, out=np.full_like(temp, np.inf), where=temp!=0)#.numpy()
         # ratio = np.divide(w[1, :, :, :1], temp, out=np.full_like(temp, np.inf), where=temp!=0) ## -----totf
         safe_temp = tf.where(temp != 0, temp, tf.constant(np.inf, dtype=temp.dtype))
         ratio = w[1, :, :, :1] / safe_temp
-
 
         for j in range(J):
             W0 = self.W(w0, (L[j]*B[j])/(L[J-1]*B[J-1]), (1 if j==0 else L[j-1]*B[j-1])/(L[J-1]*B[J-1]))
@@ -211,19 +218,14 @@ class ShearletTransform3D(tf.keras.layers.Layer):
                         shearlet_system[1].append(shearlet)
         for i in range(4):
             shearlet_system[i] = tf.stack(shearlet_system[i], axis=0)
-        print([shearlets.dtype for shearlets in shearlet_system])
         return shearlet_system
 
-    def _yield_filters(self):
-        yield self.shearlet_system[0]
-        yield self.shearlet_system[1]
-        yield tf.transpose(self.shearlet_system[1], perm=[0, 2, 3, 1])
-        yield tf.transpose(self.shearlet_system[1], perm=[0, 3, 1, 2])
-        yield self.shearlet_system[2]
-        yield tf.transpose(self.shearlet_system[2], perm=[0, 2, 3, 1])
-        yield tf.transpose(self.shearlet_system[2], perm=[0, 3, 1, 2])
-        yield self.shearlet_system[3]
-    def _yield_filter_bank_tensor(self):
+    def getFB(self):
+        if 'bio' in self.wave:
+            return self._analysis_bank_tensor(), self._synthesis_bank_tensor_biortho()
+        else:
+            return self._analysis_bank_tensor(), None
+    def _analysis_bank_tensor(self):
         FB = [
             self.shearlet_system[0],
             self.shearlet_system[1],
@@ -235,7 +237,7 @@ class ShearletTransform3D(tf.keras.layers.Layer):
             self.shearlet_system[3]
         ]
         return tf.cast(tf.concat(FB, axis=0), tf.complex128)
-    def _yield_filter_bank_tensor_rec(self):
+    def _synthesis_bank_tensor_biortho(self):
         FB = [
             self.shearlet_system_rec[0],
             self.shearlet_system_rec[1],
@@ -251,7 +253,8 @@ class ShearletTransform3D(tf.keras.layers.Layer):
     def forward(self, x):
         x = tf.cast(x, dtype=tf.complex128)
         xfft = tf.signal.fft3d(x)
-        FB = self._yield_filter_bank_tensor()
+        # FB = self._analysis_bank_tensor()
+        FB, _ = self.getFB()
         filtered = tf.einsum('ijk,fijk->fijk', xfft, FB)        
         filtered = tf.signal.ifft3d(filtered)
         # filtered = filtered[..., :x.shape[-3], :x.shape[-2], :x.shape[-1]]
@@ -265,26 +268,41 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         elif self.transform=='inverse':
             return self.inverse(x)
         else:
-            raise ValueError(f"Unknown key {transform}!! keys 'None' or 'inverse' only allowed")
+            raise ValueError(f"Unknown key {transform}!! keys 'DST' or 'IDST' only allowed")
 
     def inverse(self, y):
         y = tf.cast(y, tf.complex128)
         if self.norm:
-            y = y/self.norm_factors      
-        yfft = tf.signal.fft3d(y)
+            y = y/self.norm_factors
+        yfft = tf.signal.fft3d(y)             
         if 'bio' in self.wave:
-            FB = self._yield_filter_bank_tensor_rec()
+            _, FB = self.getFB()
         else:
-            FB = self._yield_filter_bank_tensor()
+            FB, _ = self.getFB()        
         synthesized = tf.einsum('fijk,fijk->ijk', yfft, FB)
-        # y = y*filters
-        # synthesized = tf.cast(synthesized, tf.complex128)
         synthesized = tf.signal.ifft3d(synthesized)#, axes=(-3, -2, -1))
-        # synthesized = synthesized[..., :y.shape[-3], :y.shape[-2], :y.shape[-1]]
         return tf.math.real(synthesized)
         # return synthesized
+    
+    def get_config(self): 
+        return {
+            "N": self.N,
+            "J": self.J,
+            "L": self.L,
+            "B": self.B,
+            "wave": self.wave,
+            "norm": self.norm,
+            "transform": self.transform,
+            # "shearlet_system": self.shearlet_system,
+            # "shearlet_system_rec": self.shearlet_system_rec
+            # Optional: include any other parameters used in `get_shearlet_system`
+            # and `get_norm_factors`, if needed for a full reconstruction
+            }
 
 if __name__=='__main__':
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"]="-1"  
+    import time
     start_time = time.time()
     # ST3D = ShearletTransform3D(N=128, J=2, L=[1, 2], B=[4, 8], norm=True)
     # ST3D = ShearletTransform3D(N=32, J=2, L=[1, 2], B=[4, 8], norm=True, wave='db15')
@@ -294,9 +312,8 @@ if __name__=='__main__':
     # ST3D = ShearletTransform3D(N=32, J=3, L=[1, 4, 8], B=[6, 8, 10], norm=True, wave='db20')
     print(time.time()-start_time)
 
-
-
-    ## get the shearlet filters
+    ## Example: shearlet filters
+    ## view filters
     print(ST3D)
     ## get the shearlet system
     sys3d = ST3D.shearlet_system
@@ -307,7 +324,7 @@ if __name__=='__main__':
     print('Filter dtypes: ',[_.dtype for _ in sys3d])
 
 
-
+    ## Example: perfect reconstruction 
     ## check perfect reconstruction
     n = 128
     axis1 = np.arange(0,n)
