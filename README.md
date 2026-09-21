@@ -98,4 +98,4 @@ Apache License 2.0. See [`LICENSE`](LICENSE).
 
 * * *
 
-***TFDST (C) 2025 Kishore Kumar Tarafdar, भारत*** 🇮🇳
+***TFDST (C) 2025 Vineet Ghule and Kishore Kumar Tarafdar, भारत*** 🇮🇳
