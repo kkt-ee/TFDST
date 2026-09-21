@@ -92,7 +92,7 @@ This software is released for broad research, educational, and engineering use. 
 Apache License 2.0. See [`LICENSE`](LICENSE).
 
 
-**Credit:** 
+## Credit 
 1. **Vineet Ghule**: Basic shearlet filter-bank construction with perfect reconstruction. 
 2. **Kishore Kumar Tarafdar:** Realization as TensorFlow/Keras layers with batched multichannel I/O with biothogonal wavelet support and performance-oriented updates.
 
