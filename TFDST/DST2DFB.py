@@ -14,6 +14,10 @@ class DST2D(ShearletTransform2D):
     performance-oriented updates.
     """
     def __init__(self, transform=None, **kwargs):#, l1=0.0, l2=0.0):
+        # The layer performs its own explicit complex128 conversion. Disabling
+        # Keras autocasting prevents float64 inputs from first being truncated
+        # to the default float32 compute dtype.
+        kwargs.setdefault('autocast', False)
         super(DST2D, self).__init__(**kwargs)
         self.transform = transform
         if self.transform == 'inverse':
@@ -21,6 +25,8 @@ class DST2D(ShearletTransform2D):
     
     ## UPDATE applied for batched multichannel inputs
     def forward(self, x):
+        x = tf.convert_to_tensor(x)
+        input_is_real = not x.dtype.is_complex
         x = tf.cast(x, dtype=tf.complex128)
         # FB = self._yield_filter_bank_tensor()
         FB, _ = self.getFB()
@@ -36,7 +42,9 @@ class DST2D(ShearletTransform2D):
         ## reshape last two axis and output
         shape_tmp = tf.shape(y)
         y = tf.reshape(y, (shape_tmp[0], shape_tmp[1], shape_tmp[2], shape_tmp[3]*shape_tmp[4]))
-        return tf.math.real(y)
+        if self.real_coefficients and input_is_real:
+            return tf.math.real(y)
+        return y
     
     def call(self, x):
         if self.transform==None:
@@ -44,13 +52,14 @@ class DST2D(ShearletTransform2D):
         elif self.transform=='inverse':
             return self.inverse(x)
         else:
-            raise ValueError(f"Unknown key {transform}!! keys 'None' (default) or 'inverse' only allowed")
+            raise ValueError(f"Unknown key {self.transform}!! keys 'None' (default) or 'inverse' only allowed")
 
     def inverse(self, y):
         y = tf.cast(y, tf.complex128)
+        FBdec, FBrec = self.getFB()
         ## reshape to (batch, n1,n2, channels, shearlets)
         input_shape = tf.shape(y)
-        num_shearlet_filters = self.norm_factors.shape[0]
+        num_shearlet_filters = FBdec.shape[0]
         channels = input_shape[-1] // num_shearlet_filters
         y = tf.reshape(y, (input_shape[0],input_shape[1],input_shape[2], channels, num_shearlet_filters))
         ## transpose to (batch, channels, shearlets, n1,n2,n3) 
@@ -61,10 +70,7 @@ class DST2D(ShearletTransform2D):
             y = y/self.norm_factors
             # y = tf.einsum('bcfijk,fijk->bcfijk', y, 1/self.norm_factors)      
         yfft = tf.signal.fft2d(y)
-        if 'bio' in self.wave:
-            _, FB = self.getFB()
-        else:
-            FB, _ = self.getFB()  
+        FB = FBrec if FBrec is not None else FBdec
         synthesized = tf.einsum('bcfij,fij->bcij', yfft, FB)
         synthesized = tf.cast(synthesized, tf.complex128)
         synthesized = tf.signal.ifft2d(synthesized)#, axes=(-3, -2, -1))

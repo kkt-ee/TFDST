@@ -24,24 +24,28 @@ class ShearletTransform2D(tf.keras.layers.Layer):
         a=None, 
         norm=False, 
         wave='db3',
+        real_coefficients=True,
         transform=None, ## inverse
         **kwargs):
+        kwargs.setdefault('autocast', False)
         super().__init__(**kwargs)
         self.transform = transform ## inverse
         self.wave = wave
         self.π = tf.constant(np.pi, dtype=tf.float64)
         self.N = N
         self.J = J
+        self.a = a
+        if a is not None:
+            L = [int(tf.math.round(a**(0.5*j))) for j in range(J)]
+            B = [a**(j+1)/L[j] for j in range(J)]
         self.L = L
         self.B = B
         self.norm = norm
+        self.real_coefficients = real_coefficients
         self.shearlet_system = self.get_shearlet_system('wavedec')
         if 'bio' in self.wave:
             self.shearlet_system_rec = self.get_shearlet_system('waverec')
         else: self.shearlet_system_rec = None
-        if a is not None:
-            L = [int(tf.math.round(a**((1-1/2)*j))) for j in range(J)]
-            B = [a**(j+1)/L[j] for j in range(J)]
         if self.norm:
             self.norm_factors = self.get_norm_factors()
         
@@ -203,6 +207,65 @@ class ShearletTransform2D(tf.keras.layers.Layer):
             return self._analysis_bank_tensor(), self._synthesis_bank_tensor_biortho()
         else:
             return self._analysis_bank_tensor(), None
+
+    def _nyquist_real_correction(self, FB):
+        """Apply the FFST even-size correction for real coefficients.
+
+        ``FB`` uses TensorFlow's unshifted FFT ordering.  The Nyquist row and
+        column are therefore at ``N // 2`` rather than at index zero as in the
+        shifted-grid formulation in Section 3.8.1 of the FFST paper.
+        """
+        if not self.real_coefficients or self.N % 2:
+            return FB
+
+        # Filter-bank layout: lowpass, all horizontal interior shears, all
+        # vertical interior shears, then two seam filters per scale.  FFST
+        # corrects only the non-axis-aligned filters at the finest scale.
+        interior_counts = [2 * int(l) - 1 for l in self.L]
+        preceding = sum(interior_counts[:-1])
+        total = sum(interior_counts)
+        finest_l = int(self.L[-1])
+
+        horizontal_start = 1 + preceding
+        vertical_start = 1 + total + preceding
+        shear_offsets = [
+            i for i, shear in enumerate(range(-finest_l + 1, finest_l))
+            if shear != 0
+        ]
+        filter_indices = (
+            [horizontal_start + i for i in shear_offsets]
+            + [vertical_start + i for i in shear_offsets]
+            + [1 + 2 * total + 2 * (self.J - 1) + i for i in range(2)]
+        )
+
+        n = self.N
+        nyquist = n // 2
+        reverse_indices = tf.math.floormod(-tf.range(n), n)
+        filter_mask = tf.reduce_any(
+            tf.equal(
+                tf.range(tf.shape(FB)[0])[:, tf.newaxis],
+                tf.constant(filter_indices, dtype=tf.int32)[tf.newaxis, :],
+            ),
+            axis=1,
+        )[:, tf.newaxis, tf.newaxis]
+
+        coordinates = tf.range(n)
+        row_mask = tf.logical_and(
+            coordinates[:, tf.newaxis] == nyquist,
+            coordinates[tf.newaxis, :] != nyquist,
+        )[tf.newaxis, :, :]
+        column_mask = tf.logical_and(
+            coordinates[:, tf.newaxis] != nyquist,
+            coordinates[tf.newaxis, :] == nyquist,
+        )[tf.newaxis, :, :]
+        scale = tf.math.rsqrt(tf.cast(2.0, FB.dtype))
+        mirrored_row = scale * (FB + tf.gather(FB, reverse_indices, axis=2))
+        mirrored_column = scale * (FB + tf.gather(FB, reverse_indices, axis=1))
+        corrected = tf.where(tf.logical_and(filter_mask, row_mask), mirrored_row, FB)
+        return tf.where(
+            tf.logical_and(filter_mask, column_mask), mirrored_column, corrected
+        )
+
     def _analysis_bank_tensor(self):
         FB = [
             self.shearlet_system[0],
@@ -210,7 +273,8 @@ class ShearletTransform2D(tf.keras.layers.Layer):
             tf.transpose(self.shearlet_system[1], perm=[0, 2, 1]),
             self.shearlet_system[2],
            ]
-        return tf.cast(tf.concat(FB, axis=0), tf.complex128)
+        FB = self._nyquist_real_correction(tf.concat(FB, axis=0))
+        return tf.cast(FB, tf.complex128)
     def _synthesis_bank_tensor_biortho(self):
         FB = [
             self.shearlet_system_rec[0],
@@ -218,9 +282,12 @@ class ShearletTransform2D(tf.keras.layers.Layer):
             tf.transpose(self.shearlet_system_rec[1], perm=[0, 2, 1]),
             self.shearlet_system_rec[2],
         ]
-        return tf.cast(tf.concat(FB, axis=0), tf.complex128)
+        FB = self._nyquist_real_correction(tf.concat(FB, axis=0))
+        return tf.cast(FB, tf.complex128)
 
     def forward(self, x):
+        x = tf.convert_to_tensor(x)
+        input_is_real = not x.dtype.is_complex
         x = tf.cast(x, dtype=tf.complex128)
         xfft = tf.signal.fft2d(x)
         # FB = self._analysis_bank_tensor()
@@ -230,6 +297,8 @@ class ShearletTransform2D(tf.keras.layers.Layer):
         # filtered = filtered[..., :x.shape[-3], :x.shape[-2], :x.shape[-1]]
         if self.norm:
             filtered *= self.norm_factors
+        if self.real_coefficients and input_is_real:
+            return tf.math.real(filtered)
         return filtered
 
     def call(self, x):
@@ -238,7 +307,7 @@ class ShearletTransform2D(tf.keras.layers.Layer):
         elif self.transform=='inverse':
             return self.inverse(x)
         else:
-            raise ValueError(f"Unknown key {transform}!! keys 'DST' or 'IDST' only allowed")
+            raise ValueError(f"Unknown key {self.transform}!! keys 'DST' or 'IDST' only allowed")
 
     def inverse(self, y):
         y = tf.cast(y, tf.complex128)
@@ -255,20 +324,23 @@ class ShearletTransform2D(tf.keras.layers.Layer):
         # return synthesized
 
     def get_config(self): 
-        return {
+        config = super().get_config()
+        config.update({
             "N": self.N,
             "J": self.J,
             "L": self.L,
             "B": self.B,
+            "a": self.a,
             "wave": self.wave,
             "norm": self.norm,
+            "real_coefficients": self.real_coefficients,
             "transform": self.transform,
-            "π": self.π,
             # "shearlet_system": self.shearlet_system,
             # "shearlet_system_rec": self.shearlet_system_rec
             # Optional: include any other parameters used in `get_shearlet_system`
             # and `get_norm_factors`, if needed for a full reconstruction
-            }
+            })
+        return config
 
 if __name__=='__main__':
     import os
