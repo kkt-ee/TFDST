@@ -5,7 +5,7 @@
 
 import tensorflow as tf
 import numpy as np # for π
-import pywt
+from TFDST.dbFBimpulseResponse import FBimpulseResponses
 
 
 class ShearletTransform3D(tf.keras.layers.Layer):
@@ -28,12 +28,15 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         a=None, 
         norm=False, 
         wave='db3', 
+        real_coefficients=True,
         transform=None, ## inverse
         **kwargs):#, l1=0.0, l2=0.0):
+        kwargs.setdefault('autocast', False)
         super().__init__(**kwargs)
         """params"""
         self.transform = transform
         self.π = tf.constant(np.pi, dtype=tf.float64)
+        self.a = a
         if a is not None:
             L = [int(tf.math.round(a**(2/3*j))) for j in range(J)]
             B = [a**(j+1)/L[j] for j in range(J)]
@@ -43,6 +46,7 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         self.B = B
         self.wave = wave
         self.norm = norm
+        self.real_coefficients = real_coefficients
         self.shearlet_system = self.get_shearlet_system('wavedec')
         if 'bio' in self.wave:
             self.shearlet_system_rec = self.get_shearlet_system('waverec')
@@ -101,13 +105,11 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         return tf.where(cond, val, tf.zeros_like(x))
     @tf.function
     def _V_wavedec(self, x):
-        wavelet = pywt.Wavelet(self.wave)
-        h0 = wavelet.dec_lo
+        h0 = FBimpulseResponses[self.wave][0][0][::-1]
         return self.freqz_abs(x, h0)
     @tf.function
     def _V_waverec(self, x):
-        wavelet = pywt.Wavelet(self.wave)
-        g0 = wavelet.rec_lo
+        g0 = FBimpulseResponses[self.wave][1][0]
         return self.freqz_abs(x, g0)
     @tf.function
     def freqz_abs(self, x1, h0):
@@ -221,10 +223,122 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         return shearlet_system
 
     def getFB(self):
+        FBdec = self._analysis_bank_tensor()
         if 'bio' in self.wave:
-            return self._analysis_bank_tensor(), self._synthesis_bank_tensor_biortho()
+            FBrec = self._synthesis_bank_tensor_biortho()
+        else: FBrec = None
+        return self._nyquist_real_correction(FBdec, FBrec)
+
+    def _nyquist_real_correction(self, FBdec, FBrec=None):
+        """Make even-size 3D filters Hermitian without changing the frame.
+
+        On an even FFT grid, inversion identifies opposite points on the
+        three Nyquist planes. The non-axis filters at the finest scale are
+        mirrored once on the union of those planes (including intersections
+        only once). A common pointwise normalization then preserves the
+        analysis/synthesis partition of unity.
+        """
+        if not self.real_coefficients or self.N % 2:
+            return FBdec, FBrec
+
+        # Bank order: lowpass; three copies of interior filters; three copies
+        # of face-seam filters; corner filters. Only the non-axis filters at
+        # the finest scale meet an unpaired even-grid boundary.
+        interior_counts = [(2 * int(l) - 1) ** 2 for l in self.L]
+        face_counts = [2 * (2 * int(l) - 1) for l in self.L]
+        corner_counts = [4 for _ in self.L]
+        preceding_interior = sum(interior_counts[:-1])
+        total_interior = sum(interior_counts)
+        preceding_face = sum(face_counts[:-1])
+        total_face = sum(face_counts)
+        preceding_corner = sum(corner_counts[:-1])
+
+        finest_l = int(self.L[-1])
+        finest_width = 2 * finest_l - 1
+        axis_offset = (finest_l - 1) * finest_width + (finest_l - 1)
+        filter_indices = []
+        for cone in range(3):
+            start = 1 + cone * total_interior + preceding_interior
+            filter_indices.extend(
+                start + i
+                for i in range(interior_counts[-1])
+                if i != axis_offset
+            )
+        for cone in range(3):
+            start = (
+                1 + 3 * total_interior + cone * total_face + preceding_face
+            )
+            filter_indices.extend(range(start, start + face_counts[-1]))
+        corner_start = (
+            1 + 3 * total_interior + 3 * total_face + preceding_corner
+        )
+        filter_indices.extend(
+            range(corner_start, corner_start + corner_counts[-1])
+        )
+
+        n = self.N
+        nyquist = n // 2
+        coordinates = tf.range(n)
+        reverse_indices = tf.math.floormod(-coordinates, n)
+        is_nyquist = coordinates == nyquist
+        is_self_inverse = tf.logical_or(coordinates == 0, is_nyquist)
+        boundary = tf.logical_or(
+            tf.logical_or(
+                is_nyquist[:, tf.newaxis, tf.newaxis],
+                is_nyquist[tf.newaxis, :, tf.newaxis],
+            ),
+            is_nyquist[tf.newaxis, tf.newaxis, :],
+        )
+        fixed_points = tf.logical_and(
+            tf.logical_and(
+                is_self_inverse[:, tf.newaxis, tf.newaxis],
+                is_self_inverse[tf.newaxis, :, tf.newaxis],
+            ),
+            is_self_inverse[tf.newaxis, tf.newaxis, :],
+        )
+        boundary = tf.logical_and(boundary, tf.logical_not(fixed_points))
+        filter_mask = tf.reduce_any(
+            tf.equal(
+                tf.range(tf.shape(FBdec)[0])[:, tf.newaxis],
+                tf.constant(filter_indices, dtype=tf.int32)[tf.newaxis, :],
+            ),
+            axis=1,
+        )[:, tf.newaxis, tf.newaxis, tf.newaxis]
+        correction_mask = tf.logical_and(
+            filter_mask, boundary[tf.newaxis, :, :, :]
+        )
+
+        def make_hermitian(FB):
+            opposite = tf.gather(FB, reverse_indices, axis=1)
+            opposite = tf.gather(opposite, reverse_indices, axis=2)
+            opposite = tf.gather(opposite, reverse_indices, axis=3)
+            inv_sqrt_two = tf.cast(1.0 / np.sqrt(2.0), FB.dtype)
+            mirrored = inv_sqrt_two * (FB + tf.math.conj(opposite))
+            return tf.where(correction_mask, mirrored, FB)
+
+        FBdec = make_hermitian(FBdec)
+        if FBrec is None:
+            partition = tf.reduce_sum(
+                tf.math.real(FBdec * tf.math.conj(FBdec)), axis=0
+            )
         else:
-            return self._analysis_bank_tensor(), None
+            FBrec = make_hermitian(FBrec)
+            partition = tf.reduce_sum(tf.math.real(FBdec * FBrec), axis=0)
+
+        # Unlike the 2D edge, directional overlaps on a 3D plane need not
+        # retain unit energy after mirroring. This canonical frame
+        # normalization restores exact pointwise reconstruction.
+        scale = tf.where(
+            boundary,
+            tf.math.rsqrt(partition),
+            tf.ones_like(partition),
+        )
+        scale = tf.cast(scale, FBdec.dtype)
+        FBdec = FBdec * scale[tf.newaxis, :, :, :]
+        if FBrec is not None:
+            FBrec = FBrec * scale[tf.newaxis, :, :, :]
+        return FBdec, FBrec
+
     def _analysis_bank_tensor(self):
         FB = [
             self.shearlet_system[0],
@@ -251,6 +365,8 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         return tf.cast(tf.concat(FB, axis=0), tf.complex128)
 
     def forward(self, x):
+        x = tf.convert_to_tensor(x)
+        input_is_real = not x.dtype.is_complex
         x = tf.cast(x, dtype=tf.complex128)
         xfft = tf.signal.fft3d(x)
         # FB = self._analysis_bank_tensor()
@@ -260,6 +376,8 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         # filtered = filtered[..., :x.shape[-3], :x.shape[-2], :x.shape[-1]]
         if self.norm:
             filtered *= self.norm_factors
+        if self.real_coefficients and input_is_real:
+            return tf.math.real(filtered)
         return filtered
 
     def call(self, x):
@@ -268,7 +386,7 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         elif self.transform=='inverse':
             return self.inverse(x)
         else:
-            raise ValueError(f"Unknown key {transform}!! keys 'DST' or 'IDST' only allowed")
+            raise ValueError(f"Unknown key {self.transform}!! keys 'DST' or 'IDST' only allowed")
 
     def inverse(self, y):
         y = tf.cast(y, tf.complex128)
@@ -285,19 +403,23 @@ class ShearletTransform3D(tf.keras.layers.Layer):
         # return synthesized
     
     def get_config(self): 
-        return {
+        config = super().get_config()
+        config.update({
             "N": self.N,
             "J": self.J,
             "L": self.L,
             "B": self.B,
+            "a": self.a,
             "wave": self.wave,
             "norm": self.norm,
+            "real_coefficients": self.real_coefficients,
             "transform": self.transform,
             # "shearlet_system": self.shearlet_system,
             # "shearlet_system_rec": self.shearlet_system_rec
             # Optional: include any other parameters used in `get_shearlet_system`
             # and `get_norm_factors`, if needed for a full reconstruction
-            }
+            })
+        return config
 
 if __name__=='__main__':
     import os

@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-import pywt
+from TFDST.dbFBimpulseResponse import FBimpulseResponses
 # from scipy.signal import freqz
 import time
 
@@ -101,13 +101,11 @@ class ShearletTransform2D(tf.keras.layers.Layer):
         return tf.where(cond, val, tf.zeros_like(x))
     @tf.function
     def _V_wavedec(self, x):
-        wavelet = pywt.Wavelet(self.wave)
-        h0 = wavelet.dec_lo
+        h0 = FBimpulseResponses[self.wave][0][0][::-1]
         return self.freqz_abs(x, h0)
     @tf.function
     def _V_waverec(self, x):
-        wavelet = pywt.Wavelet(self.wave)
-        g0 = wavelet.rec_lo
+        g0 = FBimpulseResponses[self.wave][1][0]
         return self.freqz_abs(x, g0)
     @tf.function
     def freqz_abs(self, x1, h0):

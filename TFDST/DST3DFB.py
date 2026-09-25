@@ -23,6 +23,7 @@ class DST3D(ShearletTransform3D):
     performance-oriented updates.
     """
     def __init__(self, transform=None, **kwargs):#, l1=0.0, l2=0.0):
+        kwargs.setdefault('autocast', False)
         super(DST3D, self).__init__(**kwargs)
         self.transform = transform
         if self.transform == 'inverse':
@@ -30,6 +31,8 @@ class DST3D(ShearletTransform3D):
     
     ## UPDATE applied for batched multichannel inputs
     def forward(self, x):
+        x = tf.convert_to_tensor(x)
+        input_is_real = not x.dtype.is_complex
         x = tf.cast(x, dtype=tf.complex128)
         # FB = self._yield_filter_bank_tensor()
         FB, _ = self.getFB()
@@ -47,7 +50,9 @@ class DST3D(ShearletTransform3D):
         ## reshape last two axis and output
         shape_tmp = tf.shape(y)
         y = tf.reshape(y, (shape_tmp[0],shape_tmp[1],shape_tmp[2],shape_tmp[3],shape_tmp[4]*shape_tmp[5]))
-        return tf.math.real(y)
+        if self.real_coefficients and input_is_real:
+            return tf.math.real(y)
+        return y
     
     def call(self, x):
         if self.transform==None:
@@ -55,27 +60,24 @@ class DST3D(ShearletTransform3D):
         elif self.transform=='inverse':
             return self.inverse(x)
         else:
-            raise ValueError(f"Unknown key {transform}!! keys 'None' (default) or 'inverse' only allowed")
+            raise ValueError(f"Unknown key {self.transform}!! keys 'None' (default) or 'inverse' only allowed")
 
     def inverse(self, y):
         y = tf.cast(y, tf.complex128)
+        FBdec, FBrec = self.getFB()
         ## reshape to (batch, n1,n2,n3, channels, shearlets)
         input_shape = tf.shape(y)
-        num_shearlet_filters = self.norm_factors.shape[0]
+        num_shearlet_filters = tf.shape(FBdec)[0]
         channels = input_shape[-1] // num_shearlet_filters
         y = tf.reshape(y, (input_shape[0],input_shape[1],input_shape[2],input_shape[3], channels, num_shearlet_filters))
         ## transpose to (batch, channels, shearlets, n1,n2,n3) 
         ## since fft3d works on last three axis
         y = tf.transpose(y, perm=[0, 4,5, 1,2,3])
-        self.norm_factors = tf.cast(self.norm_factors, tf.complex128)
         if self.norm:
             y = y/self.norm_factors
             # y = tf.einsum('bcfijk,fijk->bcfijk', y, 1/self.norm_factors)     # not required since only scalar
         yfft = tf.signal.fft3d(y)
-        if 'bio' in self.wave:
-            _, FB = self.getFB()
-        else:
-            FB, _ = self.getFB()  
+        FB = FBrec if FBrec is not None else FBdec
         synthesized = tf.einsum('bcfijk,fijk->bcijk', yfft, FB)
         synthesized = tf.cast(synthesized, tf.complex128)
         synthesized = tf.signal.ifft3d(synthesized)#, axes=(-3, -2, -1))
