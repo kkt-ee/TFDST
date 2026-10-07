@@ -2,28 +2,20 @@ import tensorflow as tf
 import numpy as np
 import pywt
 # from scipy.signal import freqz
-import matplotlib.pyplot as plt
 import time
 
 
 class ShearletTransform2D(tf.keras.layers.Layer):
-    """ Shearlet transform 2D
+    """Shearlet transform 2D base layer.
     
     TFDST: Fast Discrete Shearlet Transform Layers in TensorFlow.
-    Copyright (C) 2025 Vineet Ghule and Kishore Kumar Tarafdar
+    Copyright 2025 Kishore Kumar Tarafdar.
+    Licensed under the Apache License, Version 2.0. See LICENSE for details.
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+    Filter-bank construction follows mathematical structure developed with
+    credit to Vineet Ghule. This implementation provides differentiable
+    TensorFlow/Keras layers with batched multichannel support and
+    performance-oriented updates.
     """
     def __init__(
         self, N, 

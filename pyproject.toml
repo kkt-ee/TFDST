@@ -4,22 +4,30 @@ build-backend = "hatchling.build"
 
 [project]
 name = "TFDST"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
-  { name="Kishore Kumar Tarafdar", email="kishorektarafdar@gmail.com" },
+  { name="Kishore Kumar Tarafdar", email="kkt.compute@gmail.com" },
 ]
 description = "Fast Discrete Shearlet Transform layers in TensorFlow"
 readme = "README.md"
 requires-python = ">=3.9"
+dependencies = [
+  "tensorflow>=2.15",
+  "numpy",
+  "PyWavelets",
+]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Operating System :: OS Independent",
   "Topic :: Scientific/Engineering",
   "Intended Audience :: Science/Research"
 ]
-license = "GPL-3.0-or-later"
+license = "Apache-2.0"
 license-files = [ "LICENSE" ]
 
 [project.urls]
 Homepage = "https://github.com/kkt-ee/TFDST"
 Issues = "https://github.com/kkt-ee/TFDST/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["TFDST"]
